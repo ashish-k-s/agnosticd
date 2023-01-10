@@ -1,0 +1,689 @@
+heat_template_version: 2016-10-14
+description: Create a project
+parameters:
+  public_net_id:
+    type: string
+    description: The ID for the floating ip
+    default: external
+  project_name:
+    type: string
+    default: {{ project_tag }}
+    ##default: ""
+    description: Name of the project for the flavors
+  project_guid: 
+    type: string
+    default: {{ guid }}
+    ##default: ""
+  api_user:
+    type: string
+    default: ""
+    description: User for API calls (i.e. ipmi)
+  api_pass:
+    type: string
+    default: ""
+    description: Password for API user
+  api_url:
+    type: string
+    default: ""
+    description: OSP URL for API calls
+ 
+  pntae_lab:
+    type: string
+    default: "tech-breakfix-ha-001"
+    description: pntae lab name
+  pntae_lab_url:
+    type: string
+    default: "http://52.118.31.116/pntae-lab-setup-scripts/"
+    description: pntae URL for injecting data
+
+resources:
+  openstack_project_infra_key:
+    type: OS::Nova::KeyPair
+    properties:
+      name:
+        str_replace:
+          template: {{ project_tag }}-infra_key
+          params:
+             $project$: { get_param: project_guid }
+      save_private_key: true
+  Network0_network:
+    type: OS::Neutron::Net
+    properties:
+      name: "Network0"
+      shared: false
+      value_specs: {"mtu": 1450}
+  Network1_network:
+    type: OS::Neutron::Net
+    properties:
+      name: "Network1"
+      shared: false
+      value_specs: {"mtu": 1450}
+  Network0_subnet:
+    type: OS::Neutron::Subnet
+    properties:
+      name: "sub-Network0"
+      network_id: { get_resource: Network0_network }
+      cidr: "192.168.0.0/24"
+      gateway_ip: ""
+      enable_dhcp: "False"
+      
+      dns_nameservers: [ "8.8.8.8", "8.8.4.4" ]
+
+  Network1_subnet:
+    type: OS::Neutron::Subnet
+    properties:
+      name: "sub-Network1"
+      network_id: { get_resource: Network1_network }
+      cidr: "172.16.100.0/24"
+      gateway_ip: "172.16.100.1"
+      enable_dhcp: "False"
+      
+      dns_nameservers: [ "8.8.8.8", "8.8.4.4" ]
+
+  Router0_router:
+    type: OS::Neutron::Router
+    properties:
+      name: "Router0"
+      external_gateway_info: { "network": { get_param: public_net_id } }
+
+  
+  Router0_Network1_port:
+    type: OS::Neutron::Port
+    properties:
+      network: { get_resource: Network1_network }
+      fixed_ips:
+        - ip_address: "172.16.100.1"
+  
+  Router0_Network1_router_if:
+    type: OS::Neutron::RouterInterface
+    properties:
+        router: { get_resource: Router0_router }
+
+        port: { get_resource: Router0_Network1_port }
+
+
+
+
+
+  ####### bastion #######
+  
+  bastion.example.com_server:
+    type: OS::Nova::Server
+    properties:
+      name: "bastion.example.com"
+      
+      image: "rhel7-ipmi-pntaecommon-prod"
+      
+      config_drive: True
+      flavor: "GLOBAL-CPU_4_Memory_4096_Disk_10_flavor"
+      
+      key_name:  { get_resource: openstack_project_infra_key }
+      
+      metadata: 
+        "guid": { get_param: project_guid }
+        "description": "Instructor machine"
+
+        ### ENTRIES FOR IPMI ###
+        'api_user': { get_param: project_name }
+        'api_pass': "redhat"
+        'api_url': "https://api.red.sc01.infra.opentlc.com:13000"
+        'project_name': { get_param: project_name }
+        #'pxe_image': "pntae-pxeboot"
+        'AnsibleGroup': "bastions"
+
+        
+        "hostname": 
+          str_replace:
+            template: "bastion-REPL"
+            params:
+              REPL: {get_param: project_guid}
+        
+      user_data_format: SOFTWARE_CONFIG
+      user_data: {get_resource: bastion_config}            
+
+
+      networks:
+        
+        - port: { get_resource: bastion.example.com-0_port}
+        
+        - port: { get_resource: bastion.example.com-1_port}
+        
+
+  bastion_config:
+    type: OS::Heat::SoftwareConfig
+    properties:
+      config:
+        str_replace: 
+          params:
+             $URL: { get_param: pntae_lab_url }
+             $LAB: { get_param: pntae_lab }
+             $VM: bastion
+          template: |
+            #!/bin/bash
+            hostnamectl set-hostname bastion.example.com
+            echo "shamrock masher positron tweet" | passwd cloud-user --stdin
+            :> /etc/resolv.conf
+            echo -e "nameserver 8.8.8.8" >> /etc/resolv.conf
+            echo -e "nameserver 8.8.4.4" >> /etc/resolv.conf
+            echo -e "\n\n\nLab environment deployment is IN PROGRESS... \nCheck /var/log/runcmd.out for status.\n\n\n" > /etc/motd
+            sed -i '/requiretty/d' /etc/sudoers
+
+
+
+            ##### SSH KEYS #####
+            sudo -u cloud-user curl -o /home/cloud-user/.ssh/pntae_key http://pntae-training.psi.redhat.com/ssh-keys/pntae_key >> /var/log/runcmd.out 2>&1
+            sudo -u cloud-user curl -o /home/cloud-user/.ssh/pntae_key.pub http://pntae-training.psi.redhat.com/ssh-keys/pntae_key.pub >> /var/log/runcmd.out 2>&1
+            sudo -u cloud-user curl -o /home/cloud-user/.ssh/config http://pntae-training.psi.redhat.com/ssh-keys/config >> /var/log/runcmd.out 2>&1
+            chmod 600 /home/cloud-user/.ssh/* >> /var/log/runcmd.out 2>&1
+            sudo -u cloud-user cat /home/cloud-user/.ssh/pntae_key.pub >> /home/cloud-user/.ssh/authorized_keys
+
+
+            ##### STARTUP SCRIPTS #####
+            curl $URL/$LAB/$VM/bin/$LAB.sh -o /usr/local/bin/$LAB.sh  >> /var/log/runcmd.out 2>&1
+            chmod a+x /usr/local/bin/*
+            curl $URL/$LAB/$VM/ansible/playbook.yaml -o /tmp/playbook.yaml >> /var/log/runcmd.out 2>&1
+
+
+            ##### ENTRY IN /etc/hosts FOR NAME RESOLUTION #####
+            echo -e "172.16.100.10 bastion.example.com bastion" >> /etc/hosts
+            echo -e "172.16.100.11 nodea.example.com nodea" >> /etc/hosts
+            echo -e "172.16.100.12 nodeb.example.com nodeb" >> /etc/hosts
+            echo -e "172.16.100.13 nodec.example.com nodec" >> /etc/hosts
+
+
+            #echo -e "Waiting for a  minute..." >> /var/log/runcmd.out
+            #sleep 60
+
+            ##### Generate ansible hosts file using /etc/hosts entries #####
+            awk 'NF>1{print $NF}' /etc/hosts > /etc/ansible/hosts
+            ##### EXECUTE ANSIBLE PLAYBOOK #####
+            sudo -u cloud-user ansible-playbook /tmp/playbook.yaml  >> /var/log/runcmd.out 2>&1
+
+  
+  bastion.example.com_services_sg:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      name: bastion.example.com_services_sg
+      rules:
+      
+      - {port_range_max: 22, port_range_min: 22, protocol: tcp, remote_ip_prefix: 0.0.0.0/0}
+      - {port_range_max: 65535, port_range_min: 1, protocol: tcp, remote_ip_prefix: 0.0.0.0/0}
+      - {port_range_max: 65535, port_range_min: 1, protocol: udp, remote_ip_prefix: 0.0.0.0/0}
+      
+      - {direction: ingress, protocol: icmp}
+      
+
+  bastion.example.com-0_port:
+    type: OS::Neutron::Port
+    properties:
+      network: { get_resource: Network1_network }
+      mac_address: "2c:c2:60:3a:e9:00"
+      
+      security_groups:
+        - bastion.example.com_services_sg
+      
+      
+      fixed_ips:
+        - {subnet: {get_resource: Network1_subnet}, ip_address: "172.16.100.10"}
+      
+    
+    depends_on:
+      
+      
+      - bastion.example.com_services_sg
+      
+    
+  bastion.example.com-1_port:
+    type: OS::Neutron::Port
+    properties:
+      network: { get_resource: Network0_network }
+      mac_address: "2c:c2:60:59:f1:50"
+      
+      port_security_enabled: False
+      
+      fixed_ips:
+        - {subnet: {get_resource: Network0_subnet}, ip_address: "192.168.0.240"}
+      
+
+
+  ####### nodea ####### 
+
+  nodea.example.com_server:
+    type: OS::Nova::Server
+    properties:
+      name: "nodea.example.com"
+      
+      image: "rhel-7.9-pntaecommon-prod"
+      
+      config_drive: True
+      flavor: "GLOBAL-CPU_4_Memory_4096_Disk_10_flavor"
+
+      
+      key_name:  { get_resource: openstack_project_infra_key }
+      
+      metadata: 
+        "guid": { get_param: project_guid }
+
+        ### ENTRY FOR IPMI ###
+        "description": "ipmiaddr:192.168.0.21 ipmipw:redhat"
+        
+        "hostname": 
+          str_replace:
+            template: "nodea"
+            params:
+              REPL: {get_param: project_guid}
+            
+      user_data_format: SOFTWARE_CONFIG
+      user_data: {get_resource: nodea_config}
+
+      networks:
+        
+        - port: { get_resource: nodea.example.com-0_port}
+        
+        - port: { get_resource: nodea.example.com-1_port}
+        
+  nodea_config:
+    type: OS::Heat::SoftwareConfig
+    properties:
+      config:
+        str_replace:
+          params:
+             $URL: { get_param: pntae_lab_url }
+             $LAB: { get_param: pntae_lab }
+             $VM: nodea
+          template: |
+            #!/bin/bash
+            hostnamectl set-hostname nodea.example.com
+            :> /etc/resolv.conf
+            echo -e "nameserver 8.8.8.8" >> /etc/resolv.conf
+            echo -e "nameserver 8.8.4.4" >> /etc/resolv.conf
+            echo -e "Lab environment deployment is in progress. Check /var/log/runcmd.out for status." > /etc/motd
+            echo -e "RUNCMD" > /var/log/runcmd.out
+
+
+            ##### SSH KEYS #####
+            sudo -u cloud-user curl -o /home/cloud-user/.ssh/pntae_key http://pntae-training.psi.redhat.com/ssh-keys/pntae_key >> /var/log/runcmd.out 2>&1
+            sudo -u cloud-user curl -o /home/cloud-user/.ssh/pntae_key.pub http://pntae-training.psi.redhat.com/ssh-keys/pntae_key.pub >> /var/log/runcmd.out 2>&1
+            sudo -u cloud-user curl -o /home/cloud-user/.ssh/config http://pntae-training.psi.redhat.com/ssh-keys/config >> /var/log/runcmd.out 2>&1
+            chmod 600 /home/cloud-user/.ssh/* >> /var/log/runcmd.out 2>&1
+            sudo -u cloud-user cat /home/cloud-user/.ssh/pntae_key.pub >> /home/cloud-user/.ssh/authorized_keys
+
+
+            ##### STARTUP SCRIPTS #####
+            curl $URL/$LAB/$VM/bin/$LAB.sh -o /usr/local/bin/$LAB.sh  >> /var/log/runcmd.out 2>&1
+            chmod a+x /usr/local/bin/*
+            curl $URL/$LAB/$VM/ansible/playbook.yaml -o /tmp/playbook.yaml >> /var/log/runcmd.out 2>&1
+
+
+            ##### REGISTER VM / CONFIGURE REPOS / INSTALL PACKAGES #####
+            curl http://capsule.infra.prod.upshift.eng.rdu2.redhat.com:8080/pulp/repos/yum.repos.d/rhel-7-server-rpms.repo -o /etc/yum.repos.d/rhel-7-server-rpms.repo
+            curl http://capsule.infra.prod.upshift.eng.rdu2.redhat.com:8080/pulp/repos/yum.repos.d/rhel-7-server-ansible-2.6-rpms.repo -o /etc/yum.repos.d/rhel-7-server-ansible-2.6-rpms.repo
+
+            yum install -y ansible wget
+
+
+
+            ##### ENTRY IN /etc/hosts FOR NAME RESOLUTION #####
+            echo -e "172.16.100.10 bastion.example.com bastion" >> /etc/hosts
+            echo -e "172.16.100.11 nodea.example.com nodea" >> /etc/hosts
+            echo -e "172.16.100.12 nodeb.example.com nodeb" >> /etc/hosts
+            echo -e "172.16.100.13 nodec.example.com nodec" >> /etc/hosts
+
+            echo -e "Waiting for a  minute..." >> /var/log/runcmd.out
+            sleep 60
+
+            ##### EXECUTE ANSIBLE PLAYBOOK #####
+            sudo -u cloud-user ansible-playbook /tmp/playbook.yaml  >> /var/log/runcmd.out 2>&1
+
+
+            echo -e "Lab environment deployment is done. You may use this lab." >> /var/log/runcmd.out 2>&1
+            echo -e "Lab environment deployment is done. You may use this lab." > /etc/motd
+
+
+  nodea.example.com-0_port:
+    type: OS::Neutron::Port
+    properties:
+      network: { get_resource: Network1_network }
+      mac_address: "2c:c2:60:3a:e9:01"
+      
+      security_groups:
+        - nodea.example.com_services_sg
+      
+      
+      fixed_ips:
+        - {subnet: {get_resource: Network1_subnet}, ip_address: "172.16.100.11"}
+      
+    
+    depends_on:
+      
+      
+      - nodea.example.com_services_sg
+      
+  nodea.example.com_services_sg:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      name: nodea.example.com_services_sg
+      rules:
+      
+      - {port_range_max: 22, port_range_min: 22, protocol: tcp, remote_ip_prefix: 0.0.0.0/0}
+      - {port_range_max: 65535, port_range_min: 1, protocol: tcp, remote_ip_prefix: 0.0.0.0/0}
+      - {port_range_max: 65535, port_range_min: 1, protocol: udp, remote_ip_prefix: 0.0.0.0/0}
+
+      - {direction: ingress, protocol: icmp}
+
+
+  nodea.example.com-1_port:
+    type: OS::Neutron::Port
+    properties:
+      network: { get_resource: Network0_network }
+      mac_address: "2c:c2:60:59:f1:51"
+      
+      port_security_enabled: False
+      
+      fixed_ips:
+        - {subnet: {get_resource: Network0_subnet}, ip_address: "192.168.0.241"}
+
+
+
+
+  ####### nodeb #######
+
+  nodeb.example.com_server:
+    type: OS::Nova::Server
+    properties:
+      name: "nodeb.example.com"
+      
+      image: "rhel-7.9-pntaecommon-prod"
+      
+      config_drive: True
+      flavor: "GLOBAL-CPU_4_Memory_4096_Disk_10_flavor"
+
+      
+      key_name:  { get_resource: openstack_project_infra_key }
+      
+      metadata: 
+        "guid": { get_param: project_guid }
+
+        ### ENTRY FOR IPMI ###
+        "description": "ipmiaddr:192.168.0.22 ipmipw:redhat"
+        
+        "hostname": 
+          str_replace:
+            template: "nodeb"
+            params:
+              REPL: {get_param: project_guid}
+            
+      user_data_format: SOFTWARE_CONFIG
+      user_data: {get_resource: nodeb_config}
+
+      networks:
+        
+        - port: { get_resource: nodeb.example.com-0_port}
+        
+        - port: { get_resource: nodeb.example.com-1_port}
+        
+
+  nodeb_config:
+    type: OS::Heat::SoftwareConfig
+    properties:
+      config:
+        str_replace:
+          params:
+             $URL: { get_param: pntae_lab_url }
+             $LAB: { get_param: pntae_lab }
+             $VM: nodeb
+          template: |
+            #!/bin/bash
+            hostnamectl set-hostname nodeb.example.com
+            :> /etc/resolv.conf
+            echo -e "nameserver 8.8.8.8" >> /etc/resolv.conf
+            echo -e "nameserver 8.8.4.4" >> /etc/resolv.conf
+            echo -e "RUNCMD" > /var/log/runcmd.out
+
+
+            ##### SSH KEYS #####
+            sudo -u cloud-user curl -o /home/cloud-user/.ssh/pntae_key http://pntae-training.psi.redhat.com/ssh-keys/pntae_key >> /var/log/runcmd.out 2>&1
+            sudo -u cloud-user curl -o /home/cloud-user/.ssh/pntae_key.pub http://pntae-training.psi.redhat.com/ssh-keys/pntae_key.pub >> /var/log/runcmd.out 2>&1
+            sudo -u cloud-user curl -o /home/cloud-user/.ssh/config http://pntae-training.psi.redhat.com/ssh-keys/config >> /var/log/runcmd.out 2>&1
+            chmod 600 /home/cloud-user/.ssh/* >> /var/log/runcmd.out 2>&1
+            sudo -u cloud-user cat /home/cloud-user/.ssh/pntae_key.pub >> /home/cloud-user/.ssh/authorized_keys
+
+
+            ##### STARTUP SCRIPTS #####
+            curl $URL/$LAB/$VM/bin/$LAB.sh -o /usr/local/bin/$LAB.sh  >> /var/log/runcmd.out 2>&1
+            chmod a+x /usr/local/bin/*
+            curl $URL/$LAB/$VM/ansible/playbook.yaml -o /tmp/playbook.yaml >> /var/log/runcmd.out 2>&1
+
+
+            ##### REGISTER VM / CONFIGURE REPOS / INSTALL PACKAGES #####
+            curl http://capsule.infra.prod.upshift.eng.rdu2.redhat.com:8080/pulp/repos/yum.repos.d/rhel-7-server-rpms.repo -o /etc/yum.repos.d/rhel-7-server-rpms.repo
+            curl http://capsule.infra.prod.upshift.eng.rdu2.redhat.com:8080/pulp/repos/yum.repos.d/rhel-7-server-ansible-2.6-rpms.repo -o /etc/yum.repos.d/rhel-7-server-ansible-2.6-rpms.repo
+
+            yum install -y ansible wget
+
+
+            ##### ENTRY IN /etc/hosts FOR NAME RESOLUTION #####
+            echo -e "172.16.100.10 bastion.example.com bastion" >> /etc/hosts
+            echo -e "172.16.100.11 nodea.example.com nodea" >> /etc/hosts
+            echo -e "172.16.100.12 nodeb.example.com nodeb" >> /etc/hosts
+            echo -e "172.16.100.13 nodec.example.com nodec" >> /etc/hosts
+
+            echo -e "Waiting for a  minute..." >> /var/log/runcmd.out
+            sleep 60
+
+            ##### EXECUTE ANSIBLE PLAYBOOK #####
+            sudo -u cloud-user ansible-playbook /tmp/playbook.yaml  >> /var/log/runcmd.out 2>&1
+
+
+
+  nodeb.example.com-0_port:
+    type: OS::Neutron::Port
+    properties:
+      network: { get_resource: Network1_network }
+      mac_address: "2c:c2:60:3a:e9:02"
+      
+      security_groups:
+        - nodeb.example.com_services_sg
+      
+      
+      fixed_ips:
+        - {subnet: {get_resource: Network1_subnet}, ip_address: "172.16.100.12"}
+      
+    
+    depends_on:
+      
+      
+      - nodeb.example.com_services_sg
+      
+  nodeb.example.com_services_sg:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      name: nodeb.example.com_services_sg
+      rules:
+      
+      - {port_range_max: 22, port_range_min: 22, protocol: tcp, remote_ip_prefix: 0.0.0.0/0}
+      - {port_range_max: 65535, port_range_min: 1, protocol: tcp, remote_ip_prefix: 0.0.0.0/0}
+      - {port_range_max: 65535, port_range_min: 1, protocol: udp, remote_ip_prefix: 0.0.0.0/0}
+      
+      - {direction: ingress, protocol: icmp}
+
+    
+  nodeb.example.com-1_port:
+    type: OS::Neutron::Port
+    properties:
+      network: { get_resource: Network0_network }
+      mac_address: "2c:c2:60:59:f1:52"
+      
+      port_security_enabled: False
+      
+      fixed_ips:
+        - {subnet: {get_resource: Network0_subnet}, ip_address: "192.168.0.242"}
+      
+
+      
+
+
+  ####### nodec #######
+
+  nodec.example.com_server:
+    type: OS::Nova::Server
+    properties:
+      name: "nodec.example.com"
+      
+      image: "rhel-7.9-pntaecommon-prod"
+      
+      config_drive: True
+      flavor: "GLOBAL-CPU_4_Memory_4096_Disk_10_flavor"
+
+      
+      key_name:  { get_resource: openstack_project_infra_key }
+      
+      metadata: 
+        "guid": { get_param: project_guid }
+
+        ### ENTRY FOR IPMI ###
+        "description": "ipmiaddr:192.168.0.23 ipmipw:redhat"
+        
+        "hostname": 
+          str_replace:
+            template: "nodec"
+            params:
+              REPL: {get_param: project_guid}
+            
+      user_data_format: SOFTWARE_CONFIG
+      user_data: {get_resource: nodec_config}
+
+      networks:
+        
+        - port: { get_resource: nodec.example.com-0_port}
+        
+        - port: { get_resource: nodec.example.com-1_port}
+        
+
+  nodec_config:
+    type: OS::Heat::SoftwareConfig
+    properties:
+      config:
+        str_replace:
+          params:
+             $URL: { get_param: pntae_lab_url }
+             $LAB: { get_param: pntae_lab }
+             $VM: nodec
+          template: |
+            #!/bin/bash
+            hostnamectl set-hostname nodec.example.com
+            :> /etc/resolv.conf
+            echo -e "nameserver 8.8.8.8" >> /etc/resolv.conf
+            echo -e "nameserver 8.8.4.4" >> /etc/resolv.conf
+            echo -e "RUNCMD" > /var/log/runcmd.out
+
+
+
+            ##### SSH KEYS #####
+            sudo -u cloud-user curl -o /home/cloud-user/.ssh/pntae_key http://pntae-training.psi.redhat.com/ssh-keys/pntae_key >> /var/log/runcmd.out 2>&1
+            sudo -u cloud-user curl -o /home/cloud-user/.ssh/pntae_key.pub http://pntae-training.psi.redhat.com/ssh-keys/pntae_key.pub >> /var/log/runcmd.out 2>&1
+            sudo -u cloud-user curl -o /home/cloud-user/.ssh/config http://pntae-training.psi.redhat.com/ssh-keys/config >> /var/log/runcmd.out 2>&1
+            chmod 600 /home/cloud-user/.ssh/* >> /var/log/runcmd.out 2>&1
+            sudo -u cloud-user cat /home/cloud-user/.ssh/pntae_key.pub >> /home/cloud-user/.ssh/authorized_keys
+
+
+            ##### STARTUP SCRIPTS #####
+            curl $URL/$LAB/$VM/bin/$LAB.sh -o /usr/local/bin/$LAB.sh  >> /var/log/runcmd.out 2>&1
+            chmod a+x /usr/local/bin/*
+            curl $URL/$LAB/$VM/ansible/playbook.yaml -o /tmp/playbook.yaml >> /var/log/runcmd.out 2>&1
+
+
+            ##### REGISTER VM / CONFIGURE REPOS / INSTALL PACKAGES #####
+            curl http://capsule.infra.prod.upshift.eng.rdu2.redhat.com:8080/pulp/repos/yum.repos.d/rhel-7-server-rpms.repo -o /etc/yum.repos.d/rhel-7-server-rpms.repo
+            curl http://capsule.infra.prod.upshift.eng.rdu2.redhat.com:8080/pulp/repos/yum.repos.d/rhel-7-server-ansible-2.6-rpms.repo -o /etc/yum.repos.d/rhel-7-server-ansible-2.6-rpms.repo
+
+            yum install -y ansible wget
+
+
+            ##### ENTRY IN /etc/hosts FOR NAME RESOLUTION #####
+            echo -e "172.16.100.10 bastion.example.com bastion" >> /etc/hosts
+            echo -e "172.16.100.11 nodea.example.com nodea" >> /etc/hosts
+            echo -e "172.16.100.12 nodeb.example.com nodeb" >> /etc/hosts
+            echo -e "172.16.100.13 nodec.example.com nodec" >> /etc/hosts
+
+            echo -e "Waiting for a  minute..." >> /var/log/runcmd.out
+            sleep 60
+
+            ##### EXECUTE ANSIBLE PLAYBOOK #####
+            sudo -u cloud-user ansible-playbook /tmp/playbook.yaml  >> /var/log/runcmd.out 2>&1
+
+
+  nodec.example.com-0_port:
+    type: OS::Neutron::Port
+    properties:
+      network: { get_resource: Network1_network }
+      mac_address: "2c:c2:60:3a:e9:03"
+      
+      security_groups:
+        - nodec.example.com_services_sg
+      
+      
+      fixed_ips:
+        - {subnet: {get_resource: Network1_subnet}, ip_address: "172.16.100.13"}
+      
+    
+    depends_on:
+      
+      
+      - nodec.example.com_services_sg
+      
+  nodec.example.com_services_sg:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      name: nodec.example.com_services_sg
+      rules:
+      
+      - {port_range_max: 22, port_range_min: 22, protocol: tcp, remote_ip_prefix: 0.0.0.0/0}
+      - {port_range_max: 65535, port_range_min: 1, protocol: tcp, remote_ip_prefix: 0.0.0.0/0}
+      - {port_range_max: 65535, port_range_min: 1, protocol: udp, remote_ip_prefix: 0.0.0.0/0}
+      
+      - {direction: ingress, protocol: icmp}
+
+    
+  nodec.example.com-1_port:
+    type: OS::Neutron::Port
+    properties:
+      network: { get_resource: Network0_network }
+      mac_address: "2c:c2:60:59:f1:53"
+      
+      port_security_enabled: False
+      
+      fixed_ips:
+        - {subnet: {get_resource: Network0_subnet}, ip_address: "192.168.0.243"}
+      
+
+
+
+    
+  floating_ip:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network_id: { get_param: public_net_id }
+    depends_on:
+      - bastion.example.com_server
+
+  association:
+    type: OS::Neutron::FloatingIPAssociation
+    properties:
+      floatingip_id: { get_resource: floating_ip }
+      port_id: { get_resource: bastion.example.com-0_port }
+
+outputs:
+  output_1:
+    value: "Get pntae ssh private key (skip if you already have it): \n $ curl http://training1.gsslab.rdu2.redhat.com/pntae-training-ssh/pntae_training_key -o ~/.ssh/pntae_training_key\n $ chmod 600  ~/.ssh/pntae_training_key"
+  output_2:
+    description: Name of the instance.
+    value: { get_attr: [ bastion.example.com_server, name ] }
+  output_3:
+    value: "ssh access:"
+  output_4:
+    description: IP address of the instance.
+    value:
+      list_join: ['', ['ssh -i ~/.ssh/pntae_training_key cloud-user@', { get_attr: [ floating_ip, floating_ip_address ] }]]
+
+

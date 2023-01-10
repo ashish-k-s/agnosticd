@@ -1,0 +1,8 @@
+- name: Step Software
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - debug:
+        msg: "Step Software"
+

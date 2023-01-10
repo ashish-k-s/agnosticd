@@ -1,0 +1,8 @@
+- name: Step Pre Infrastructure
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - debug:
+        msg: "Step Pre Infrastructure"
+

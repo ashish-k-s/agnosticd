@@ -1,0 +1,8 @@
+- name: Step Post Infrastructure
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - debug:
+        msg: "Step Post Infrastructure"
+
