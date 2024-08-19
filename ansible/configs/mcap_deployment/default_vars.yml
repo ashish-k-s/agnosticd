@@ -107,7 +107,16 @@ common_packages_el9:
   - at
   - ansible-core
   - gcc
+  - lvm2
+  - podman
+  - libvirt
+  - qemu-kvm
   - virt-manager
+  - virt-install
+  - libguestfs-tools
+  - libguestfs-tools-c
+  - cockpit
+  - cockpit-machines
 
 rhel_repos:
   - rhel-7-server-rpms
