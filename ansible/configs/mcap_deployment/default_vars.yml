@@ -105,6 +105,9 @@ common_packages:
   - git
   - vim-enhanced
   - at
+  - ansible-code
+  - gcc
+  - virt-manager
 
 rhel_repos:
   - rhel-7-server-rpms
