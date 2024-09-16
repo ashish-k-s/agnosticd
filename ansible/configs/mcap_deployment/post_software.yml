@@ -20,6 +20,11 @@
       when: showroom_git_repo is defined
       ansible.builtin.include_role:
         name: showroom
+        
+    - name: Clone mcap-deployment-files repository
+      ansible.builtin.git:
+        repo: https://github.com/RedHatQuickCourses/mcap-deployment-files.git
+        dest: /root/
 
 - name: PostSoftware flight-check
   hosts: localhost
