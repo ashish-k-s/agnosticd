@@ -50,6 +50,7 @@ controlPlane:
       memoryMB: {{ master_instance_memory_mb | to_json }} 
 {% endif %}
   replicas: {{ master_instance_count | int }}
+cpuPartitioningMode: AllNodes
 compute:
 - name: worker
   hyperthreading: Enabled
