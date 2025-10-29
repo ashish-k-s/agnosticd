@@ -50,7 +50,7 @@ controlPlane:
       memoryMB: {{ master_instance_memory_mb | to_json }} 
 {% endif %}
   replicas: {{ master_instance_count | int }}
-cpuPartitioningMode: AllNodes
+cpuPartitioningMode: {{ ocp4_cpu_partitioning_mode | default('None') }}
 compute:
 - name: worker
   hyperthreading: Enabled
